@@ -22,9 +22,11 @@ except:
 # by default, upon 0 set to None. Should instructively fail if some non
 # 0/1 value is set.
 multiprocessing = int(os.environ.get('JOBLIB_MULTIPROCESSING', 1)) or None
+
 if multiprocessing:
     try:
         import multiprocessing
+        from .pool import MemmapingPool
     except ImportError:
         multiprocessing = None
 
@@ -163,7 +165,7 @@ class Parallel(Logger):
             The number of jobs to use for the computation. If -1 all CPUs
             are used. If 1 is given, no parallel computing code is used
             at all, which is useful for debuging. For n_jobs below -1,
-            (n_cpus + 1 + n_jobs) are used. Thus for n_jobs = -2, all
+            (n_cpus + 1 - n_jobs) are used. Thus for n_jobs = -2, all
             CPUs but one are used.
         verbose: int, optional
             The verbosity level: if non zero, progress messages are
@@ -174,6 +176,19 @@ class Parallel(Logger):
             The amount of jobs to be pre-dispatched. Default is 'all',
             but it may be memory consuming, for instance if each job
             involves a lot of a data.
+        temp_folder: str, optional
+            Folder to be used by the pool for memmaping large numpy
+            arrays for sharing memory with worker processes. If
+            None, this will use the system temporary folder or can
+            be overridden with TMP, TMPDIR or TEMP environment
+            variables.
+        max_nbytes int or None, optional, 1e6 (1MB) by default
+            Threshold on the size of arrays passed to the workers that
+            triggers automated memmory mapping in temp_folder.
+            Use None to disable memmaping of large arrays.
+        verbose: int, optional
+            Make it possible to monitor how the communication of numpy arrays
+            with the subprocess is handled (pickling or memmaping)
 
         Notes
         -----
@@ -197,13 +212,19 @@ class Parallel(Logger):
 
             * Interruption of multiprocesses jobs with 'Ctrl-C'
 
+            * Flexible pickling control for the communication to and from
+              the worker processes.
+
+            * Ability to use shared memory efficiently with worker
+              processes for large numpy-based datastructures.
+
         Examples
         --------
 
         A simple example:
 
         >>> from math import sqrt
-        >>> from sklearn.externals.joblib import Parallel, delayed
+        >>> from joblib import Parallel, delayed
         >>> Parallel(n_jobs=1)(delayed(sqrt)(i**2) for i in range(10))
         [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]
 
@@ -211,7 +232,7 @@ class Parallel(Logger):
         values:
 
         >>> from math import modf
-        >>> from sklearn.externals.joblib import Parallel, delayed
+        >>> from joblib import Parallel, delayed
         >>> r = Parallel(n_jobs=1)(delayed(modf)(i/2.) for i in range(10))
         >>> res, i = zip(*r)
         >>> res
@@ -223,7 +244,7 @@ class Parallel(Logger):
         messages::
 
             >>> from time import sleep
-            >>> from sklearn.externals.joblib import Parallel, delayed
+            >>> from joblib import Parallel, delayed
             >>> r = Parallel(n_jobs=2, verbose=5)(delayed(sleep)(.1) for _ in range(10)) #doctest: +SKIP
             [Parallel(n_jobs=2)]: Done   1 out of  10 | elapsed:    0.1s remaining:    0.9s
             [Parallel(n_jobs=2)]: Done   3 out of  10 | elapsed:    0.2s remaining:    0.5s
@@ -237,7 +258,7 @@ class Parallel(Logger):
         child process::
 
          >>> from heapq import nlargest
-         >>> from sklearn.externals.joblib import Parallel, delayed
+         >>> from joblib import Parallel, delayed
          >>> Parallel(n_jobs=2)(delayed(nlargest)(2, n) for n in (range(4), 'abcde', 3)) #doctest: +SKIP
          #...
          ---------------------------------------------------------------------------
@@ -269,7 +290,7 @@ class Parallel(Logger):
         number of iterations cannot be reported in the progress messages::
 
          >>> from math import sqrt
-         >>> from sklearn.externals.joblib import Parallel, delayed
+         >>> from joblib import Parallel, delayed
 
          >>> def producer():
          ...     for i in range(6):
@@ -291,11 +312,15 @@ class Parallel(Logger):
          [Parallel(n_jobs=2)]: Done   5 out of   6 | elapsed:    0.0s remaining:    0.0s
          [Parallel(n_jobs=2)]: Done   6 out of   6 | elapsed:    0.0s finished
     '''
-    def __init__(self, n_jobs=1, verbose=0, pre_dispatch='all'):
+    def __init__(self, n_jobs=1, verbose=0, pre_dispatch='all',
+                 temp_folder=None, max_nbytes=1e6, mmap_mode='c'):
         self.verbose = verbose
         self.n_jobs = n_jobs
         self.pre_dispatch = pre_dispatch
         self._pool = None
+        self._temp_folder = temp_folder
+        self._max_nbytes = max_nbytes
+        self._mmap_mode = mmap_mode
         # Not starting the pool in the __init__ is a design decision, to be
         # able to close it ASAP, and not burden the user with closing it.
         self._output = None
@@ -427,12 +452,10 @@ class Parallel(Logger):
                         if hasattr(self, '_pool'):
                             self._pool.close()
                             self._pool.terminate()
-                            # We can now allow subprocesses again
-                            os.environ.pop('__JOBLIB_SPAWNED_PARALLEL__', 0)
                         raise exception
                     elif isinstance(exception, TransportableException):
-                        # Capture exception to add information on the local
-                        # stack in addition to the distant stack
+                        # Capture exception to add information on the local stack
+                        # in addition to the distant stack
                         this_report = format_outer_frames(context=10,
                                                         stack_start=1)
                         report = """Multiprocessing exception:
@@ -472,36 +495,24 @@ class Parallel(Logger):
                     'Parallel loops cannot be nested, setting n_jobs=1',
                     stacklevel=2)
             else:
-                already_forked = int(os.environ.get('__JOBLIB_SPAWNED_PARALLEL__', 0))
-                if already_forked:
-                    raise ImportError('[joblib] Attempting to do parallel computing'
-                            'without protecting your import on a system that does '
-                            'not support forking. To use parallel-computing in a '
-                            'script, you must protect you main loop using "if '
-                            "__name__ == '__main__'"
-                            '". Please see the joblib documentation on Parallel '
-                            'for more information'
-                        )
-
-                # Set an environment variable to avoid infinite loops
-                os.environ['__JOBLIB_SPAWNED_PARALLEL__'] = '1'
-                self._pool = multiprocessing.Pool(n_jobs)
+                self._pool = MemmapingPool(
+                    n_jobs, max_nbytes=self._max_nbytes,
+                    mmap_mode=self._mmap_mode,
+                    temp_folder=self._temp_folder,
+                    verbose=max(0, self.verbose - 50),
+                )
                 self._lock = threading.Lock()
                 # We are using multiprocessing, we also want to capture
                 # KeyboardInterrupts
                 self.exceptions.extend([KeyboardInterrupt, WorkerInterrupt])
 
-        pre_dispatch = self.pre_dispatch
-        if isinstance(iterable, list):
-            # We are given a list. No need to be lazy
-            pre_dispatch = 'all'
-
-        if pre_dispatch == 'all' or n_jobs == 1:
+        if self.pre_dispatch == 'all' or n_jobs == 1:
             self._iterable = None
             self._pre_dispatch_amount = 0
         else:
             self._iterable = iterable
             self._dispatch_amount = 0
+            pre_dispatch = self.pre_dispatch
             if hasattr(pre_dispatch, 'endswith'):
                 pre_dispatch = eval(pre_dispatch)
             self._pre_dispatch_amount = pre_dispatch = int(pre_dispatch)
@@ -525,8 +536,7 @@ class Parallel(Logger):
         finally:
             if n_jobs > 1:
                 self._pool.close()
-                self._pool.join()
-                os.environ.pop('__JOBLIB_SPAWNED_PARALLEL__', 0)
+                self._pool.terminate()  # terminate does a join()
             self._jobs = list()
         output = self._output
         self._output = None
