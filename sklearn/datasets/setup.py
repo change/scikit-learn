@@ -11,7 +11,6 @@ def configuration(parent_package='', top_path=None):
     config.add_data_dir('descr')
     config.add_data_dir('images')
     config.add_data_dir(os.path.join('tests', 'data'))
-    config.add_subpackage('svmlight-loader')
     config.add_extension('_svmlight_format',
                          sources=['_svmlight_format.c'],
                          include_dirs=[numpy.get_include()])

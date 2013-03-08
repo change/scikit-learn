@@ -1,14 +1,9 @@
-from distutils.core import setup, Extension
-import numpy as np
-
-#!/usr/bin/env python
-
 import numpy
 import os
 
 def configuration(parent_package='', top_path=None):
     from numpy.distutils.misc_util import Configuration
-    config = Configuration('svmlight-loader', parent_package, top_path)
+    config = Configuration('svmlight_loader', parent_package, top_path)
     config.add_extension('_svmlight_loader',
             include_dirs=[numpy.get_include()],
             sources = ['_svmlight_loader.cpp'],

@@ -17,6 +17,7 @@ def configuration(parent_package='', top_path=None):
     config.add_subpackage('__check_build')
     config.add_subpackage('svm')
     config.add_subpackage('datasets')
+    config.add_subpackage('svmlight_loader')
     config.add_subpackage('datasets/tests')
     config.add_subpackage('feature_extraction')
     config.add_subpackage('feature_extraction/tests')
