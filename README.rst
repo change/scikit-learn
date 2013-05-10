@@ -3,14 +3,14 @@
 change.org fork of scikit-learn
 ===============================
 
-scikit-learn is awesome but fast moving. The objective of the fork
+scikit-learn is awesome but fast moving. The objective of this fork
 (more precisely of the stable branch) is to have a production-ready
 branch including various modifications to the vanilla scikit-learn.
 
 Dependencies
 ============
 
-On Ubuntu 12.04 LTS do:
+On Ubuntu 12.04 LTS do::
 
   sudo apt-get install build-essential python-dev python-numpy python-setuptools python-scipy libatlas-dev
 
@@ -25,7 +25,7 @@ This configuration matches the Ubuntu 10.04 LTS release from April 2010.
 Install
 =======
 
-Make sure you have all the dependencies installed and then do:
+Make sure you have all the dependencies installed and then do::
 
   python setup.py build
   sudo python setup.py install
